@@ -1,0 +1,43 @@
+version: "3.8"
+
+services:
+    faceservice:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        container_name: faceservice
+        restart: always
+        # Tidak ada 'ports:' — diakses internal oleh apisimak_app via Docker network
+        # http://faceservice:8001 (tidak pakai port host)
+        # Untuk debug lokal: tambahkan ports: ["8084:8001"] sementara
+        environment:
+            # ── Database (rahasia: DB_PASSWORD via .env server) ────────────────
+            DB_HOST: 103.124.198.68
+            DB_PORT: "3306"
+            DB_NAME: db_simpeg
+            DB_USER: adminsimak
+            # ── Service ────────────────────────────────────────────────────────
+            FACE_SERVICE_HOST: "0.0.0.0"
+            FACE_SERVICE_PORT: "8001"
+            ARCFACE_THRESHOLD: "0.40"
+            # ── Path uploads (sama dengan volume apisimak) ─────────────────────
+            FOTO_FACE_PATH: /var/www/uploads/foto_face
+            AUDIT_SELFIE_PATH: /var/www/uploads/audit_selfie
+        volumes:
+            # Mount uploads yang sama dengan apisimak_app
+            # apisimak/docker-compose.yml: ../simak/uploads:/var/www/uploads
+            # faceservice satu level dengan apisimak, jadi path-nya sama
+            - ../simak/uploads:/var/www/uploads
+            # Cache model InsightFace buffalo_l (~500MB) — persistent agar tidak re-download
+            - faceservice_models:/app/.insightface
+        networks:
+            - apisimak_net
+
+networks:
+    # Bergabung ke network apisimak yang sudah berjalan (external)
+    # Wajib: jalankan apisimak dulu sebelum faceservice
+    apisimak_net:
+        external: true
+
+volumes:
+    faceservice_models:

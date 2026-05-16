@@ -1,0 +1,22 @@
+[Unit]
+Description=SIABDI Face Service (ArcFace)
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/faceservice
+ExecStart=/var/www/faceservice/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --workers 1
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=faceservice
+
+# Batasi resource agar tidak mengganggu Laravel
+MemoryMax=2G
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target
