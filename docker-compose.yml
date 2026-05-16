@@ -11,11 +11,12 @@ services:
         # http://faceservice:8001 (tidak pakai port host)
         # Untuk debug lokal: tambahkan ports: ["8084:8001"] sementara
         environment:
-            # ── Database (rahasia: DB_PASSWORD via .env server) ────────────────
+            # ── Database (DB_PASSWORD dibaca dari .env server) ─────────────────
             DB_HOST: 103.124.198.68
             DB_PORT: "3306"
             DB_NAME: db_simpeg
             DB_USER: adminsimak
+            DB_PASSWORD: ${DB_PASSWORD}
             # ── Service ────────────────────────────────────────────────────────
             FACE_SERVICE_HOST: "0.0.0.0"
             FACE_SERVICE_PORT: "8001"
