@@ -35,12 +35,15 @@ ALUR TEKNIS LENGKAP
 
 [THRESHOLD]
   - Cosine similarity (dot product vektor ternormalisasi): 0.0 = beda, 1.0 = identik
-  - ARCFACE_THRESHOLD=0.40 → cukup ketat, turunkan ke 0.35 jika terlalu banyak gagal
+  - Dibaca dari tbl_siabdi_face_config.arcface_threshold (bukan .env lagi) —
+    satu-satunya sumber kebenaran, dipakai bareng oleh Laravel & Python.
+    .env ARCFACE_THRESHOLD tetap ada sebagai fallback kalau DB tidak terjangkau.
 ══════════════════════════════════════════════════════════════════
 """
 
 import json
 import logging
+import time
 import numpy as np
 import cv2
 import insightface
@@ -50,6 +53,38 @@ from app import config
 from app.database import get_connection
 
 logger = logging.getLogger(__name__)
+
+# ── Threshold dinamis dari tbl_siabdi_face_config ───────────────────────────────
+# Satu-satunya sumber kebenaran untuk threshold ArcFace, dipakai bareng oleh
+# Laravel (FaceController) dan Python (di sini) supaya tidak drift antar-service.
+# Cache in-process 60 detik supaya tidak query DB di setiap request /verify.
+_threshold_cache: dict = {"value": None, "fetched_at": 0.0}
+_THRESHOLD_CACHE_TTL = 60
+
+
+def get_arcface_threshold() -> float:
+    now = time.time()
+    if _threshold_cache["value"] is not None and (now - _threshold_cache["fetched_at"]) < _THRESHOLD_CACHE_TTL:
+        return _threshold_cache["value"]
+
+    threshold = config.ARCFACE_THRESHOLD  # fallback kalau tabel/DB tidak terjangkau
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT arcface_threshold FROM tbl_siabdi_face_config ORDER BY id LIMIT 1")
+                row = cur.fetchone()
+                if row and row.get("arcface_threshold") is not None:
+                    threshold = float(row["arcface_threshold"])
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"Gagal baca arcface_threshold dari DB, pakai fallback .env: {e}")
+
+    _threshold_cache["value"] = threshold
+    _threshold_cache["fetched_at"] = now
+    return threshold
+
 
 # ── Singleton model ────────────────────────────────────────────────────────────
 
@@ -144,10 +179,11 @@ def verify_against_stored(nip: str, probe_embedding: np.ndarray) -> dict:
         return {"verified": False, "score": 0.0, "detail": "no_embedding"}
 
     ref = np.array(json.loads(row["embedding_arcface"]), dtype=np.float32)
+    threshold = get_arcface_threshold()
     score = cosine_similarity(probe_embedding, ref)
-    verified = score >= config.ARCFACE_THRESHOLD
+    verified = score >= threshold
 
-    logger.info(f"[{nip}] score={score:.4f} threshold={config.ARCFACE_THRESHOLD} verified={verified}")
+    logger.info(f"[{nip}] score={score:.4f} threshold={threshold} verified={verified}")
     return {"verified": verified, "score": round(score, 4)}
 
 
