@@ -38,7 +38,7 @@ services:
             # ── Upload foto (Opsi B: HTTP ke apisimak di server-app) ───────────
             # Ganti ke alamat yang benar-benar bisa dijangkau dari server-utama
             # ke server-app — apisimak_nginx expose host port 8080 di sana.
-            APISIMAK_INTERNAL_URL: "http://192.168.2.2:8080/api/internal/foto"
+            APISIMAK_INTERNAL_URL: "http://192.168.2.2:8080/api/v1/internal/foto"
             APISIMAK_INTERNAL_TOKEN: ${APISIMAK_INTERNAL_TOKEN}
             # FOTO_FACE_PATH cuma dipakai scripts/extract_embeddings.py — TIDAK
             # relevan di server ini (foto fisiknya ada di server-app). Skrip itu

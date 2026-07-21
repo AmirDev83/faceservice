@@ -28,7 +28,7 @@ ARCFACE_THRESHOLD = float(os.getenv("ARCFACE_THRESHOLD", 0.40))
 # apisimak_nginx (entrypoint HTTP-nya). Default ini untuk kondisi SEKARANG
 # (1 host, network Docker sama). Setelah faceservice pindah ke server-utama,
 # ganti ke URL yang bisa dijangkau lintas host, mis. http://192.168.2.2:8080/...
-APISIMAK_INTERNAL_URL   = os.getenv("APISIMAK_INTERNAL_URL", "http://apisimak_nginx/api/internal/foto")
+APISIMAK_INTERNAL_URL   = os.getenv("APISIMAK_INTERNAL_URL", "http://apisimak_nginx/api/v1/internal/foto")
 APISIMAK_INTERNAL_TOKEN = os.getenv("APISIMAK_INTERNAL_TOKEN", "")
 
 # Dipakai HANYA oleh scripts/extract_embeddings.py (bulk Phase 2, baca file lokal
