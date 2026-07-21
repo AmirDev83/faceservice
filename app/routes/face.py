@@ -19,11 +19,16 @@ router = APIRouter()
 
 
 @router.get("/health")
-def health():
+async def health():
+    # get_arcface_threshold() query DB (dgn cache 60s) — sama persis fungsi yang
+    # dipakai /verify. Sebelumnya di sini cuma tampilkan config.ARCFACE_THRESHOLD
+    # (fallback .env statis), jadi tidak pernah mencerminkan nilai asli dari
+    # tbl_siabdi_face_config yang benar-benar dipakai saat verifikasi.
+    threshold = await asyncio.to_thread(arc_svc.get_arcface_threshold)
     return {
         "status": "ok",
         "model": "buffalo_l",
-        "threshold": config.ARCFACE_THRESHOLD,
+        "threshold": threshold,
     }
 
 
