@@ -1,6 +1,12 @@
 """
 Phase 2 — Bulk extract ArcFace embeddings dari foto_wajah yang sudah ada di DB.
 
+PENTING (Tahap 2/Opsi B): skrip ini baca file foto LANGSUNG dari disk
+(config.FOTO_FACE_PATH), beda dari endpoint /verify & /extract yang sudah
+dialihkan ke upload HTTP ke apisimak. Kalau faceservice sudah pindah ke
+server terpisah (server-utama), skrip ini WAJIB dijalankan dari server-app
+(tempat folder uploads/foto_face fisik berada) — bukan dari server-utama.
+
 Cara pakai (jalankan dari root faceservice/):
     python scripts/extract_embeddings.py
 

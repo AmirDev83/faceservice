@@ -7,12 +7,20 @@ services:
             dockerfile: Dockerfile
         container_name: faceservice
         restart: always
-        # Tidak ada 'ports:' — diakses internal oleh apisimak_app via Docker network
-        # http://faceservice:8001 (tidak pakai port host)
-        # Untuk debug lokal: tambahkan ports: ["8084:8001"] sementara
+        # Tahap 2: faceservice pindah host terpisah dari apisimak (server-utama,
+        # bukan lagi 1 host via Docker network internal). apisimak (di server-app,
+        # 192.168.2.2) akses faceservice lewat IP privat ini, BUKAN nama service.
+        #
+        # PENTING — port di-bind KHUSUS ke IP privat server ini (192.168.2.3),
+        # BUKAN 0.0.0.0. Ini supaya port 8001 TIDAK PERNAH bisa diakses dari
+        # interface publik server-utama sama sekali, apa pun kondisi firewall —
+        # lebih aman daripada cuma mengandalkan aturan ufw/iptables (Docker
+        # dikenal suka menimpa aturan ufw untuk port yang di-publish).
+        ports:
+            - "192.168.2.3:8001:8001"
         environment:
-            # ── Database (DB_PASSWORD dibaca dari .env server) ─────────────────
-            DB_HOST: 192.168.2.3
+            # ── Database — SEKARANG LOKAL (server ini juga lokasi DB) ──────────
+            DB_HOST: 127.0.0.1
             DB_PORT: "3306"
             DB_NAME: db_simpeg
             DB_USER: adminsimak
@@ -21,24 +29,20 @@ services:
             FACE_SERVICE_HOST: "0.0.0.0"
             FACE_SERVICE_PORT: "8001"
             ARCFACE_THRESHOLD: "0.40"
-            # ── Path uploads (sama dengan volume apisimak) ─────────────────────
-            FOTO_FACE_PATH: /var/www/uploads/foto_face
-            AUDIT_SELFIE_PATH: /var/www/uploads/audit_selfie
+            # ── Upload foto (Opsi B: HTTP ke apisimak di server-app) ───────────
+            # Ganti ke alamat yang benar-benar bisa dijangkau dari server-utama
+            # ke server-app — apisimak_nginx expose host port 8080 di sana.
+            APISIMAK_INTERNAL_URL: "http://192.168.2.2:8080/api/internal/foto"
+            APISIMAK_INTERNAL_TOKEN: ${APISIMAK_INTERNAL_TOKEN}
+            # FOTO_FACE_PATH cuma dipakai scripts/extract_embeddings.py — TIDAK
+            # relevan di server ini (foto fisiknya ada di server-app). Skrip itu
+            # WAJIB dijalankan dari server-app, bukan dari container ini.
         volumes:
-            # Mount uploads yang sama dengan apisimak_app
-            # apisimak/docker-compose.yml: ../simak/uploads:/var/www/uploads
-            # faceservice satu level dengan apisimak, jadi path-nya sama
-            - ../simak/uploads:/var/www/uploads
             # Cache model InsightFace buffalo_l (~500MB) — persistent agar tidak re-download
             - faceservice_models:/app/.insightface
-        networks:
-            - apisimak_net
-
-networks:
-    # Bergabung ke network apisimak yang sudah berjalan (external)
-    # Wajib: jalankan apisimak dulu sebelum faceservice
-    apisimak_net:
-        external: true
+        # Tidak perlu 'networks:' khusus — pakai default bridge network Compose,
+        # karena tidak lagi satu host dengan apisimak (apisimak_net cuma ada di
+        # server-app, akan gagal kalau di-reference di sini).
 
 volumes:
     faceservice_models:

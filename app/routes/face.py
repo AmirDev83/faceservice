@@ -5,10 +5,10 @@ Endpoints:
   GET  /health  — cek apakah service berjalan dan model sudah dimuat
 """
 
-import os
 import time
 import asyncio
 import logging
+import httpx
 from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile, HTTPException
 
 from app import config
@@ -24,7 +24,6 @@ def health():
         "status": "ok",
         "model": "buffalo_l",
         "threshold": config.ARCFACE_THRESHOLD,
-        "foto_face_path": config.FOTO_FACE_PATH,
     }
 
 
@@ -43,16 +42,20 @@ async def verify(
       3. Banding probe vs embedding_arcface di tbl_siabdi_face_embeddings (db_simpeg)
       4. Kembalikan {verified, score} → Laravel teruskan ke Flutter (use_device=false)
 
-    Foto disimpan sementara di AUDIT_SELFIE_PATH/{nip}_verify_{timestamp}.jpg
-    agar bisa dievaluasi dari SIMAK (sama pola dengan storePendingPresence Laravel).
+    Foto dikirim ke endpoint internal apisimak untuk disimpan sebagai audit trail
+    (agar bisa dievaluasi dari SIMAK) — lihat _upload_foto_ke_apisimak().
     """
     image_bytes = await foto.read()
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Foto kosong.")
 
-    # Tulis file di background — tidak perlu ditunggu sebelum verdict verify dikirim
-    # ke Laravel/Flutter, ini murni audit trail.
-    background_tasks.add_task(_save_audit_foto, nip, image_bytes, "verify")
+    # Upload di background — tidak perlu ditunggu sebelum verdict verify dikirim
+    # ke Laravel/Flutter, ini murni audit trail. Kalau gagal (mis. apisimak belum
+    # punya endpoint internal-nya / jaringan bermasalah), verifikasi TETAP jalan
+    # normal — cuma foto audit untuk kasus itu yang tidak tersimpan.
+    background_tasks.add_task(
+        _upload_foto_ke_apisimak, nip, image_bytes, "verify", "audit_selfie"
+    )
 
     # extract_embedding (InsightFace, CPU-bound) & verify_against_stored (query DB) itu
     # blocking sync. Dijalankan langsung di sini (dalam "async def") akan mengunci
@@ -88,29 +91,23 @@ async def extract(
     Ekstrak embedding ArcFace dari foto dan simpan ke tbl_siabdi_face_embeddings.
 
     Dipakai oleh:
-      - scripts/extract_embeddings.py (Phase 2, bulk dari foto_wajah di disk)
-      - Admin/operator jika ingin update embedding satu NIP via HTTP
-
-    Foto disimpan ke uploads/foto_face/ (sama seperti FaceController::register() di Laravel)
-    agar foto_wajah di DB tetap bisa diakses dari SIMAK.
+      - FaceController::register() di Laravel — dipanggil OTOMATIS setelah foto
+        master SUDAH tersimpan di apisimak (lihat FaceController.php baris
+        ~110-124). Endpoint ini TIDAK menyimpan foto sama sekali — cuma
+        ekstraksi embedding — karena pemanggilnya sudah punya salinan foto
+        master sendiri. Kalau di sini foto ikut disimpan (upload balik ke
+        apisimak), hasilnya 2 file duplikat untuk 1 registrasi yang sama.
+      - scripts/extract_embeddings.py (Phase 2, baca file lokal langsung,
+        tidak lewat endpoint HTTP ini sama sekali)
+      - Admin/operator lewat HTTP untuk 1 NIP (asumsi foto master sudah ada
+        di apisimak dari alur registrasi normal)
     """
     image_bytes = await foto.read()
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Foto kosong.")
 
-    # Simpan foto ke uploads/foto_face/ dengan pola sama seperti Laravel
-    filename = f"{nip}_master_{int(time.time())}.jpg"
-    foto_path = os.path.join(config.FOTO_FACE_PATH, filename)
-    os.makedirs(config.FOTO_FACE_PATH, exist_ok=True)
-    with open(foto_path, "wb") as f:
-        f.write(image_bytes)
-    logger.info(f"[{nip}] Foto master disimpan: {foto_path}")
-
     embedding = await asyncio.to_thread(arc_svc.extract_embedding, image_bytes)
     if embedding is None:
-        # Hapus foto jika wajah tidak terdeteksi
-        try: os.remove(foto_path)
-        except OSError: pass
         return {"success": False, "message": f"[{nip}] Wajah tidak terdeteksi di foto."}
 
     saved = await asyncio.to_thread(arc_svc.save_embedding, nip, embedding)
@@ -120,22 +117,39 @@ async def extract(
     return {
         "success": True,
         "message": f"[{nip}] Embedding ArcFace berhasil disimpan.",
-        "foto": filename,
     }
 
 
-def _save_audit_foto(nip: str, image_bytes: bytes, prefix: str = "verify") -> None:
+async def _upload_foto_ke_apisimak(
+    nip: str, image_bytes: bytes, prefix: str, kind: str
+) -> bool:
     """
-    Simpan foto audit ke uploads/audit_selfie/ dengan pola sama seperti
-    PresenceController::storePendingPresence() di Laravel.
-    Hanya untuk keperluan audit/evaluasi dari SIMAK, tidak dipakai untuk verifikasi.
+    Kirim foto ke endpoint internal apisimak (POST APISIMAK_INTERNAL_URL) untuk
+    disimpan ke folder uploads/{kind}/ di server-app — menggantikan tulis file
+    lokal langsung, karena faceservice & apisimak sekarang bisa di host berbeda
+    (server-utama vs server-app) tanpa filesystem yang dibagi.
+
+    Non-fatal: kegagalan di sini (network/endpoint belum ada) TIDAK BOLEH
+    menggagalkan hasil verifikasi/registrasi wajah — foto cuma untuk audit trail.
     """
+    if not config.APISIMAK_INTERNAL_URL:
+        logger.warning(f"[{nip}] APISIMAK_INTERNAL_URL belum diset, lewati upload foto.")
+        return False
+
+    filename = f"{nip}_{prefix}_{int(time.time())}.jpg"
     try:
-        os.makedirs(config.AUDIT_SELFIE_PATH, exist_ok=True)
-        filename = f"{nip}_{prefix}_{int(time.time())}.jpg"
-        filepath = os.path.join(config.AUDIT_SELFIE_PATH, filename)
-        with open(filepath, "wb") as f:
-            f.write(image_bytes)
-        logger.info(f"[{nip}] Audit foto disimpan: {filepath}")
-    except OSError as e:
-        logger.warning(f"[{nip}] Gagal simpan audit foto: {e}")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                config.APISIMAK_INTERNAL_URL,
+                headers={"Authorization": f"Bearer {config.APISIMAK_INTERNAL_TOKEN}"},
+                data={"nip": nip, "kind": kind, "filename": filename},
+                files={"foto": (filename, image_bytes, "image/jpeg")},
+            )
+        if resp.status_code != 200:
+            logger.warning(f"[{nip}] Upload foto ke apisimak gagal: HTTP {resp.status_code} {resp.text[:200]}")
+            return False
+        logger.info(f"[{nip}] Foto {kind} terkirim ke apisimak: {filename}")
+        return True
+    except httpx.HTTPError as e:
+        logger.warning(f"[{nip}] Upload foto ke apisimak gagal (network): {e}")
+        return False
