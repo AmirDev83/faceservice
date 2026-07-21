@@ -7,8 +7,9 @@ Endpoints:
 
 import os
 import time
+import asyncio
 import logging
-from fastapi import APIRouter, File, Form, UploadFile, HTTPException
+from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile, HTTPException
 
 from app import config
 from app.services import arcface as arc_svc
@@ -29,6 +30,7 @@ def health():
 
 @router.post("/verify")
 async def verify(
+    background_tasks: BackgroundTasks,
     nip: str = Form(...),
     foto: UploadFile = File(...),
 ):
@@ -48,16 +50,22 @@ async def verify(
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Foto kosong.")
 
-    # Simpan foto ke uploads/audit_selfie/ (sama seperti storePendingPresence di Laravel)
-    # Agar operator SIMAK bisa evaluasi jika ada klaim gagal verifikasi
-    _save_audit_foto(nip, image_bytes, prefix="verify")
+    # Tulis file di background — tidak perlu ditunggu sebelum verdict verify dikirim
+    # ke Laravel/Flutter, ini murni audit trail.
+    background_tasks.add_task(_save_audit_foto, nip, image_bytes, "verify")
 
-    probe = arc_svc.extract_embedding(image_bytes)
+    # extract_embedding (InsightFace, CPU-bound) & verify_against_stored (query DB) itu
+    # blocking sync. Dijalankan langsung di sini (dalam "async def") akan mengunci
+    # SATU-SATUNYA event loop worker ini — request lain (termasuk /health) ikut
+    # tertahan sampai selesai. asyncio.to_thread melepas keduanya ke thread terpisah;
+    # ONNX Runtime melepas GIL saat inference native-nya jalan, jadi request lain bisa
+    # diproses bersamaan alih-alih antre satu-satu.
+    probe = await asyncio.to_thread(arc_svc.extract_embedding, image_bytes)
     if probe is None:
         logger.info(f"[{nip}] Wajah tidak terdeteksi di foto selfie.")
         return {"verified": False, "score": 0.0}
 
-    result = arc_svc.verify_against_stored(nip, probe)
+    result = await asyncio.to_thread(arc_svc.verify_against_stored, nip, probe)
 
     if result.get("detail") == "no_embedding":
         # embedding_arcface belum ada → minta Flutter fallback ke device
@@ -98,14 +106,14 @@ async def extract(
         f.write(image_bytes)
     logger.info(f"[{nip}] Foto master disimpan: {foto_path}")
 
-    embedding = arc_svc.extract_embedding(image_bytes)
+    embedding = await asyncio.to_thread(arc_svc.extract_embedding, image_bytes)
     if embedding is None:
         # Hapus foto jika wajah tidak terdeteksi
         try: os.remove(foto_path)
         except OSError: pass
         return {"success": False, "message": f"[{nip}] Wajah tidak terdeteksi di foto."}
 
-    saved = arc_svc.save_embedding(nip, embedding)
+    saved = await asyncio.to_thread(arc_svc.save_embedding, nip, embedding)
     if not saved:
         return {"success": False, "message": f"[{nip}] NIP tidak ditemukan di database."}
 
