@@ -18,9 +18,15 @@ services:
         # dikenal suka menimpa aturan ufw untuk port yang di-publish).
         ports:
             - "192.168.2.3:8001:8001"
+        # 127.0.0.1 di dalam container = container itu sendiri, BUKAN host server
+        # ini — MySQL jalan native di host (bukan di Docker), jadi container
+        # butuh alias khusus untuk menjangkau host. host.docker.internal +
+        # extra_hosts ini yang menyediakannya (Docker Linux 20.10+).
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
         environment:
             # ── Database — SEKARANG LOKAL (server ini juga lokasi DB) ──────────
-            DB_HOST: 127.0.0.1
+            DB_HOST: host.docker.internal
             DB_PORT: "3306"
             DB_NAME: db_simpeg
             DB_USER: adminsimak
